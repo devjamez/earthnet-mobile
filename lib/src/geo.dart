@@ -33,6 +33,42 @@ const _base32 = '0123456789bcdefghjkmnpqrstuvwxyz';
   return ((latLo + latHi) / 2, (lonLo + lonHi) / 2);
 }
 
+/// Encodes `(lat, lon)` to a geohash of the given precision (mirrors the Rust /
+/// Python encoders so it round-trips with [decodeGeohash]).
+String encodeGeohash(double lat, double lon, int precision) {
+  var latLo = -90.0, latHi = 90.0, lonLo = -180.0, lonHi = 180.0;
+  var even = true, bit = 0, ch = 0;
+  final out = StringBuffer();
+  while (out.length < precision) {
+    if (even) {
+      final mid = (lonLo + lonHi) / 2;
+      if (lon >= mid) {
+        ch |= 1 << (4 - bit);
+        lonLo = mid;
+      } else {
+        lonHi = mid;
+      }
+    } else {
+      final mid = (latLo + latHi) / 2;
+      if (lat >= mid) {
+        ch |= 1 << (4 - bit);
+        latLo = mid;
+      } else {
+        latHi = mid;
+      }
+    }
+    even = !even;
+    if (bit < 4) {
+      bit++;
+    } else {
+      out.write(_base32[ch]);
+      bit = 0;
+      ch = 0;
+    }
+  }
+  return out.toString();
+}
+
 /// Great-circle distance between two points in kilometers.
 double haversineKm(double lat1, double lon1, double lat2, double lon2) {
   const r = 6371.0;

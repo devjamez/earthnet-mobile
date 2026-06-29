@@ -19,9 +19,9 @@ class SensorDetector {
 
   int get _maxSamples => (sampleRate * windowSeconds).round();
 
-  /// Starts sampling; calls [onUpdate] ~2/s with the current STA/LTA ratio and
-  /// whether a P-wave pick fired in the window.
-  void start(void Function(double ratio, bool pick) onUpdate) {
+  /// Starts sampling; calls [onUpdate] ~2/s with the current STA/LTA ratio,
+  /// whether a P-wave pick fired, and a crude peak ground acceleration (g).
+  void start(void Function(double ratio, bool pick, double peakG) onUpdate) {
     _accel = accelerometerEventStream(
       samplingPeriod: SensorInterval.gameInterval,
     ).listen((e) {
@@ -36,7 +36,13 @@ class SensorDetector {
         samples: List<double>.from(_buf),
         samplingRate: sampleRate,
       );
-      onUpdate(pick?.staLtaRatio ?? 0, pick != null);
+      // peak deviation from gravity (~9.81 m/s^2) expressed in g
+      var peak = 0.0;
+      for (final v in _buf) {
+        final dev = (v - 9.81).abs();
+        if (dev > peak) peak = dev;
+      }
+      onUpdate(pick?.staLtaRatio ?? 0, pick != null, peak / 9.81);
     });
   }
 

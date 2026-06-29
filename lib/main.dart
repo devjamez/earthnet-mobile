@@ -8,7 +8,9 @@ import 'src/countdown.dart';
 import 'src/foreground_service.dart';
 import 'src/geo.dart';
 import 'src/geocode.dart';
+import 'src/identity.dart';
 import 'src/location.dart';
+import 'src/observation_sender.dart';
 import 'src/proto/earthnet.pb.dart';
 import 'src/relay_connection.dart';
 import 'src/rust/frb_generated.dart';
@@ -91,6 +93,9 @@ class _AlertPageState extends State<AlertPage> {
   bool _sensing = false;
   double _staLta = 0;
   bool _pwave = false;
+  ObservationSender? _sender;
+  DateTime? _lastSent;
+  String _sensorMsg = '';
 
   @override
   void initState() {
@@ -98,6 +103,10 @@ class _AlertPageState extends State<AlertPage> {
     // Live countdown: rebuild every second so lead times tick down.
     _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted) setState(() {});
+    });
+    // Load (or create) this phone's stable anonymous signing identity.
+    Identity.loadOrCreate().then((id) {
+      if (mounted) setState(() => _sender = ObservationSender(id));
     });
     if (_autoConnect) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _connect());
@@ -195,18 +204,49 @@ class _AlertPageState extends State<AlertPage> {
         _sensing = false;
         _staLta = 0;
         _pwave = false;
+        _sensorMsg = '';
       });
       return;
     }
-    _detector.start((ratio, pick) {
-      if (mounted) {
-        setState(() {
-          _staLta = ratio;
-          _pwave = pick;
-        });
-      }
+    // Attach picks to the real device location.
+    final loc = await DeviceLocation.current();
+    _lat = loc.lat;
+    _lon = loc.lon;
+    _gps = loc.gps;
+    _detector.start((ratio, pick, peakG) {
+      if (!mounted) return;
+      setState(() {
+        _staLta = ratio;
+        _pwave = pick;
+      });
+      if (pick) _maybeSend(peakG);
     });
     setState(() => _sensing = true);
+  }
+
+  /// On a P-wave pick, sign + POST an Observation to the node (rate-limited).
+  Future<void> _maybeSend(double peakG) async {
+    final sender = _sender;
+    if (sender == null) return;
+    final now = DateTime.now();
+    if (_lastSent != null &&
+        now.difference(_lastSent!) < const Duration(seconds: 30)) {
+      return; // cooldown: one observation per detection burst
+    }
+    _lastSent = now;
+    final host = Uri.tryParse(_url.text)?.host ?? '';
+    if (host.isEmpty) return;
+    final code = await sender.send(
+      nodeUrl: 'http://$host:8080/observations',
+      lat: _lat,
+      lon: _lon,
+      staLtaRatio: _staLta,
+      estimatedPgaG: peakG,
+    );
+    if (mounted) {
+      setState(() => _sensorMsg =
+          code == 202 ? '📡 observación enviada (HTTP 202)' : '✗ envío falló ($code)');
+    }
   }
 
   @override
@@ -262,22 +302,37 @@ class _AlertPageState extends State<AlertPage> {
           // On-device detection panel (Rust STA/LTA via flutter_rust_bridge).
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-            child: Row(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                OutlinedButton.icon(
-                  onPressed: _toggleSensor,
-                  icon: Icon(_sensing ? Icons.sensors : Icons.sensors_off),
-                  label: Text(_sensing ? 'Sensor ON' : 'Sensor OFF'),
+                Row(
+                  children: [
+                    OutlinedButton.icon(
+                      onPressed: _toggleSensor,
+                      icon: Icon(_sensing ? Icons.sensors : Icons.sensors_off),
+                      label: Text(_sensing ? 'Sensor ON' : 'Sensor OFF'),
+                    ),
+                    const SizedBox(width: 12),
+                    if (_sensing)
+                      Expanded(
+                        child: Text(
+                          _pwave
+                              ? '⚠ ONDA P DETECTADA (STA/LTA ${_staLta.toStringAsFixed(1)})'
+                              : 'STA/LTA ${_staLta.toStringAsFixed(1)}',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w600,
+                            color: _pwave ? Colors.red : Colors.grey.shade700,
+                          ),
+                        ),
+                      ),
+                  ],
                 ),
-                const SizedBox(width: 12),
-                if (_sensing)
-                  Text(
-                    _pwave
-                        ? '⚠ ONDA P DETECTADA (STA/LTA ${_staLta.toStringAsFixed(1)})'
-                        : 'STA/LTA ${_staLta.toStringAsFixed(1)}',
-                    style: TextStyle(
-                      fontWeight: FontWeight.w600,
-                      color: _pwave ? Colors.red : Colors.grey.shade700,
+                if (_sensorMsg.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Text(
+                      _sensorMsg,
+                      style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
                     ),
                   ),
               ],

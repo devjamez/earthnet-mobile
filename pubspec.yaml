@@ -46,6 +46,8 @@ dependencies:
   vibration: ^2.0.0
   # On-device P-wave detection: read the accelerometer, feed the Rust core.
   sensors_plus: ^6.0.0
+  # Persist the phone's anonymous signing identity (seed).
+  shared_preferences: ^2.3.0
   rust_lib_earthnet_mobile:
     path: rust_builder
   flutter_rust_bridge: 2.12.0
