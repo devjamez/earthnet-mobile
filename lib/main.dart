@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import 'src/alarm.dart';
+import 'src/backoff.dart';
 import 'src/countdown.dart';
 import 'src/foreground_service.dart';
 import 'src/geo.dart';
@@ -71,6 +72,9 @@ class _AlertPageState extends State<AlertPage> {
   final List<ReceivedAlert> _alerts = [];
   RelaySubscription? _sub;
   Timer? _ticker;
+  Timer? _reconnect;
+  bool _wantConnected = false;
+  int _backoff = 1;
   String _status = 'disconnected';
 
   @override
@@ -85,7 +89,15 @@ class _AlertPageState extends State<AlertPage> {
     }
   }
 
+  /// User intent to be connected; (re)opens the socket and keeps it open.
   Future<void> _connect() async {
+    _wantConnected = true;
+    await _open();
+  }
+
+  Future<void> _open() async {
+    if (!_wantConnected) return;
+    _reconnect?.cancel();
     await _sub?.close();
     setState(() => _status = 'connecting…');
     final location = await DeviceLocation.current();
@@ -93,7 +105,18 @@ class _AlertPageState extends State<AlertPage> {
     _lon = location.lon;
     final sub = RelaySubscription.connect(Uri.parse(_url.text));
     _sub = sub;
+    try {
+      await sub.ready; // throws on connection failure
+    } catch (_) {
+      _scheduleReconnect();
+      return;
+    }
+    if (!_wantConnected) {
+      await sub.close();
+      return;
+    }
     await ForegroundService.start();
+    _backoff = 1; // healthy connection resets backoff
     setState(() => _status = 'connected');
     sub.events.listen(
       (event) async {
@@ -120,18 +143,39 @@ class _AlertPageState extends State<AlertPage> {
           }
         });
       },
-      onError: (Object e) {
-        if (mounted) setState(() => _status = 'error: $e');
-      },
-      onDone: () {
-        if (mounted) setState(() => _status = 'disconnected');
-      },
+      onError: (_) => _scheduleReconnect(),
+      onDone: _scheduleReconnect,
+      cancelOnError: true,
     );
+  }
+
+  /// Reconnect with exponential backoff while the user still wants connection.
+  void _scheduleReconnect() {
+    if (!mounted) return;
+    if (!_wantConnected) {
+      setState(() => _status = 'disconnected');
+      return;
+    }
+    final delay = _backoff;
+    setState(() => _status = 'reconnecting in ${delay}s…');
+    _reconnect?.cancel();
+    _reconnect = Timer(Duration(seconds: delay), _open);
+    _backoff = nextBackoff(_backoff);
+  }
+
+  Future<void> _disconnect() async {
+    _wantConnected = false;
+    _reconnect?.cancel();
+    await _sub?.close();
+    await ForegroundService.stop();
+    if (mounted) setState(() => _status = 'disconnected');
   }
 
   @override
   void dispose() {
+    _wantConnected = false;
     _ticker?.cancel();
+    _reconnect?.cancel();
     _sub?.close();
     ForegroundService.stop();
     _url.dispose();
@@ -155,7 +199,9 @@ class _AlertPageState extends State<AlertPage> {
                   ),
                 ),
                 const SizedBox(width: 8),
-                FilledButton(onPressed: _connect, child: const Text('Connect')),
+                _wantConnected
+                    ? OutlinedButton(onPressed: _disconnect, child: const Text('Disconnect'))
+                    : FilledButton(onPressed: _connect, child: const Text('Connect')),
               ],
             ),
           ),

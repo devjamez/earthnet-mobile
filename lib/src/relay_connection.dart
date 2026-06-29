@@ -18,6 +18,9 @@ class RelaySubscription {
   factory RelaySubscription.connect(Uri relayWsUri) =>
       RelaySubscription._(WebSocketChannel.connect(relayWsUri));
 
+  /// Completes when the socket is connected; throws on connection failure.
+  Future<void> get ready => _channel.ready;
+
   /// Stream of decoded ConfirmedEvents (binary frames only).
   Stream<ConfirmedEvent> get events => _channel.stream
       .where((m) => m is List<int>)
