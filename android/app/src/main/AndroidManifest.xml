@@ -10,7 +10,9 @@
     <application
         android:label="earthnet_mobile"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:usesCleartextTraffic="true"><!-- v0.1 relay is ws:// (no TLS); switch to wss:// for production -->
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
