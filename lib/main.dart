@@ -69,6 +69,7 @@ class _AlertPageState extends State<AlertPage> {
   final _url = TextEditingController(text: _defaultRelayUrl);
   double _lat = DeviceLocation.fallback.lat;
   double _lon = DeviceLocation.fallback.lon;
+  bool _gps = false;
   final List<ReceivedAlert> _alerts = [];
   RelaySubscription? _sub;
   Timer? _ticker;
@@ -103,6 +104,7 @@ class _AlertPageState extends State<AlertPage> {
     final location = await DeviceLocation.current();
     _lat = location.lat;
     _lon = location.lon;
+    _gps = location.gps;
     final sub = RelaySubscription.connect(Uri.parse(_url.text));
     _sub = sub;
     try {
@@ -208,6 +210,17 @@ class _AlertPageState extends State<AlertPage> {
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12),
             child: Align(alignment: Alignment.centerLeft, child: Text('Status: $_status')),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'Tu ubicación: ${_lat.toStringAsFixed(3)}, ${_lon.toStringAsFixed(3)}'
+                ' (${_gps ? "GPS" : "demo"})',
+                style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
+              ),
+            ),
           ),
           const Divider(),
           Expanded(
