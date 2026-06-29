@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 
+import 'src/alarm.dart';
 import 'src/countdown.dart';
 import 'src/foreground_service.dart';
+import 'src/location.dart';
 import 'src/proto/earthnet.pb.dart';
 import 'src/relay_connection.dart';
 import 'src/verify.dart';
@@ -49,9 +51,9 @@ class _AlertPageState extends State<AlertPage> {
       WidgetsBinding.instance.addPostFrameCallback((_) => _connect());
     }
   }
-  // Demo location (Santiago). v1.1: read from device GPS.
-  final double _lat = -33.45;
-  final double _lon = -70.66;
+  // Device location, resolved on connect (falls back to Santiago).
+  double _lat = DeviceLocation.fallback.lat;
+  double _lon = DeviceLocation.fallback.lon;
   final List<ReceivedAlert> _alerts = [];
   RelaySubscription? _sub;
   String _status = 'disconnected';
@@ -59,6 +61,9 @@ class _AlertPageState extends State<AlertPage> {
   Future<void> _connect() async {
     await _sub?.close();
     setState(() => _status = 'connecting…');
+    final location = await DeviceLocation.current();
+    _lat = location.lat;
+    _lon = location.lon;
     final sub = RelaySubscription.connect(Uri.parse(_url.text));
     _sub = sub;
     await ForegroundService.start(); // keep the socket alive with screen off
@@ -68,6 +73,10 @@ class _AlertPageState extends State<AlertPage> {
         final verified = await verifyConfirmedEvent(event);
         final lead = sWaveLeadSeconds(event, _lat, _lon);
         if (!mounted) return;
+        // Multimodal alarm only for a verified, still-approaching quake.
+        if (verified && lead > 0) {
+          Alarm.trigger();
+        }
         setState(() => _alerts.insert(0, ReceivedAlert(event, verified, lead)));
       },
       onError: (Object e) {
