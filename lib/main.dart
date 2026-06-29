@@ -1,8 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'src/alarm.dart';
 import 'src/countdown.dart';
 import 'src/foreground_service.dart';
+import 'src/geo.dart';
 import 'src/location.dart';
 import 'src/proto/earthnet.pb.dart';
 import 'src/relay_connection.dart';
@@ -21,13 +24,34 @@ class EarthNetApp extends StatelessWidget {
       );
 }
 
-/// An incoming event annotated with verification + local S-wave countdown.
+/// An incoming event annotated with verification, epicenter, and distance.
+/// The countdown is recomputed live from the event's origin time.
 class ReceivedAlert {
-  ReceivedAlert(this.event, this.verified, this.leadSeconds);
+  ReceivedAlert({
+    required this.event,
+    required this.verified,
+    required this.epiLat,
+    required this.epiLon,
+    required this.distanceKm,
+    required this.userLat,
+    required this.userLon,
+  });
+
   final ConfirmedEvent event;
   final bool verified;
-  final double leadSeconds;
+  final double epiLat;
+  final double epiLon;
+  final double distanceKm;
+  final double userLat;
+  final double userLon;
+
+  double get leadSeconds => sWaveLeadSeconds(event, userLat, userLon);
 }
+
+// Demo hooks: `--dart-define=AUTOCONNECT=true --dart-define=RELAY_URL=...`
+const _autoConnect = bool.fromEnvironment('AUTOCONNECT');
+const _defaultRelayUrl =
+    String.fromEnvironment('RELAY_URL', defaultValue: 'ws://10.0.2.2:8090/subscribe');
 
 class AlertPage extends StatefulWidget {
   const AlertPage({super.key});
@@ -36,27 +60,26 @@ class AlertPage extends StatefulWidget {
   State<AlertPage> createState() => _AlertPageState();
 }
 
-// Demo hooks: `--dart-define=AUTOCONNECT=true --dart-define=RELAY_URL=...`
-const _autoConnect = bool.fromEnvironment('AUTOCONNECT');
-const _defaultRelayUrl =
-    String.fromEnvironment('RELAY_URL', defaultValue: 'ws://10.0.2.2:8090/subscribe');
-
 class _AlertPageState extends State<AlertPage> {
   final _url = TextEditingController(text: _defaultRelayUrl);
-
-  @override
-  void initState() {
-    super.initState();
-    if (_autoConnect) {
-      WidgetsBinding.instance.addPostFrameCallback((_) => _connect());
-    }
-  }
-  // Device location, resolved on connect (falls back to Santiago).
   double _lat = DeviceLocation.fallback.lat;
   double _lon = DeviceLocation.fallback.lon;
   final List<ReceivedAlert> _alerts = [];
   RelaySubscription? _sub;
+  Timer? _ticker;
   String _status = 'disconnected';
+
+  @override
+  void initState() {
+    super.initState();
+    // Live countdown: rebuild every second so lead times tick down.
+    _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() {});
+    });
+    if (_autoConnect) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _connect());
+    }
+  }
 
   Future<void> _connect() async {
     await _sub?.close();
@@ -66,18 +89,26 @@ class _AlertPageState extends State<AlertPage> {
     _lon = location.lon;
     final sub = RelaySubscription.connect(Uri.parse(_url.text));
     _sub = sub;
-    await ForegroundService.start(); // keep the socket alive with screen off
+    await ForegroundService.start();
     setState(() => _status = 'connected');
     sub.events.listen(
       (event) async {
         final verified = await verifyConfirmedEvent(event);
-        final lead = sWaveLeadSeconds(event, _lat, _lon);
+        final (epiLat, epiLon) = decodeGeohash(event.epicenter.geohash);
+        final alert = ReceivedAlert(
+          event: event,
+          verified: verified,
+          epiLat: epiLat,
+          epiLon: epiLon,
+          distanceKm: haversineKm(epiLat, epiLon, _lat, _lon),
+          userLat: _lat,
+          userLon: _lon,
+        );
         if (!mounted) return;
-        // Multimodal alarm only for a verified, still-approaching quake.
-        if (verified && lead > 0) {
+        if (verified && alert.leadSeconds > 0) {
           Alarm.trigger();
         }
-        setState(() => _alerts.insert(0, ReceivedAlert(event, verified, lead)));
+        setState(() => _alerts.insert(0, alert));
       },
       onError: (Object e) {
         if (mounted) setState(() => _status = 'error: $e');
@@ -90,6 +121,7 @@ class _AlertPageState extends State<AlertPage> {
 
   @override
   void dispose() {
+    _ticker?.cancel();
     _sub?.close();
     ForegroundService.stop();
     _url.dispose();
@@ -99,7 +131,7 @@ class _AlertPageState extends State<AlertPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('EarthNet — early warning')),
+      appBar: AppBar(title: const Text('EarthNet — alerta temprana')),
       body: Column(
         children: [
           Padding(
@@ -124,8 +156,9 @@ class _AlertPageState extends State<AlertPage> {
           const Divider(),
           Expanded(
             child: _alerts.isEmpty
-                ? const Center(child: Text('Waiting for events…'))
+                ? const Center(child: Text('Esperando sismos…'))
                 : ListView.builder(
+                    padding: const EdgeInsets.all(8),
                     itemCount: _alerts.length,
                     itemBuilder: (context, i) => _AlertCard(_alerts[i]),
                   ),
@@ -140,29 +173,70 @@ class _AlertCard extends StatelessWidget {
   const _AlertCard(this.alert);
   final ReceivedAlert alert;
 
+  static String _lat(double v) => '${v.abs().toStringAsFixed(2)}°${v >= 0 ? 'N' : 'S'}';
+  static String _lon(double v) => '${v.abs().toStringAsFixed(2)}°${v >= 0 ? 'E' : 'W'}';
+
   @override
   Widget build(BuildContext context) {
     final lead = alert.leadSeconds;
     final incoming = lead > 0;
-    final color = incoming ? Colors.red : Colors.grey;
+    final color = incoming ? Colors.red : Colors.grey.shade600;
+    final m = alert.event.magnitude;
+
     return Card(
-      color: color.withValues(alpha: 0.1),
-      child: ListTile(
-        leading: Icon(
-          alert.verified ? Icons.verified : Icons.gpp_bad,
-          color: alert.verified ? Colors.green : Colors.red,
+      color: incoming ? Colors.red.withValues(alpha: 0.08) : null,
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            // Big live countdown
+            SizedBox(
+              width: 96,
+              child: Column(
+                children: [
+                  Text(
+                    incoming ? '${lead.ceil()}' : '—',
+                    style: TextStyle(fontSize: 40, fontWeight: FontWeight.bold, color: color),
+                  ),
+                  Text(
+                    incoming ? 'seg. para\nla onda S' : 'onda S\nya llegó',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 11, color: color),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Text(
+                        m > 0 ? 'Magnitud ${m.toStringAsFixed(1)}' : 'Magnitud —',
+                        style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                      ),
+                      const SizedBox(width: 8),
+                      Icon(
+                        alert.verified ? Icons.verified : Icons.gpp_bad,
+                        size: 18,
+                        color: alert.verified ? Colors.green : Colors.red,
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  Text('Epicentro: ${_lat(alert.epiLat)}, ${_lon(alert.epiLon)}'),
+                  Text(
+                    'A ${alert.distanceKm.toStringAsFixed(0)} km de vos',
+                    style: const TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
-        title: Text(
-          'M${alert.event.magnitude.toStringAsFixed(1)}  •  ${alert.event.evidence.name}',
-        ),
-        subtitle: Text(
-          incoming ? 'S-wave in ${lead.toStringAsFixed(0)} s' : 'S-wave already arrived',
-          style: TextStyle(
-            color: color,
-            fontWeight: incoming ? FontWeight.bold : FontWeight.normal,
-          ),
-        ),
-        trailing: Text(alert.verified ? 'verified' : 'UNVERIFIED'),
       ),
     );
   }

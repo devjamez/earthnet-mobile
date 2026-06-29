@@ -5,6 +5,6 @@ void main() {
   testWidgets('app builds and shows the connect control', (tester) async {
     await tester.pumpWidget(const EarthNetApp());
     expect(find.text('Connect'), findsOneWidget);
-    expect(find.text('Waiting for events…'), findsOneWidget);
+    expect(find.text('Esperando sismos…'), findsOneWidget);
   });
 }
