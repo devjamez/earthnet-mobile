@@ -6,6 +6,7 @@ import 'src/alarm.dart';
 import 'src/countdown.dart';
 import 'src/foreground_service.dart';
 import 'src/geo.dart';
+import 'src/geocode.dart';
 import 'src/location.dart';
 import 'src/proto/earthnet.pb.dart';
 import 'src/relay_connection.dart';
@@ -44,6 +45,9 @@ class ReceivedAlert {
   final double distanceKm;
   final double userLat;
   final double userLon;
+
+  /// Reverse-geocoded epicenter place name; filled in asynchronously.
+  String? placeName;
 
   double get leadSeconds => sWaveLeadSeconds(event, userLat, userLon);
 }
@@ -109,6 +113,12 @@ class _AlertPageState extends State<AlertPage> {
           Alarm.trigger();
         }
         setState(() => _alerts.insert(0, alert));
+        // Reverse-geocode the (public) epicenter in the background.
+        ReverseGeocode.placeName(epiLat, epiLon).then((name) {
+          if (name != null && mounted) {
+            setState(() => alert.placeName = name);
+          }
+        });
       },
       onError: (Object e) {
         if (mounted) setState(() => _status = 'error: $e');
@@ -227,7 +237,18 @@ class _AlertCard extends StatelessWidget {
                     ],
                   ),
                   const SizedBox(height: 6),
-                  Text('Epicentro: ${_lat(alert.epiLat)}, ${_lon(alert.epiLon)}'),
+                  if (alert.placeName != null)
+                    Text(
+                      'Epicentro: cerca de ${alert.placeName}',
+                      style: const TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                  Text(
+                    '${_lat(alert.epiLat)}, ${_lon(alert.epiLon)}',
+                    style: TextStyle(
+                      fontSize: alert.placeName != null ? 12 : 14,
+                      color: Colors.grey.shade700,
+                    ),
+                  ),
                   Text(
                     'A ${alert.distanceKm.toStringAsFixed(0)} km de vos',
                     style: const TextStyle(fontWeight: FontWeight.w600),
