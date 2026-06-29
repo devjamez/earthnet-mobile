@@ -55,7 +55,7 @@ class ReceivedAlert {
 // Demo hooks: `--dart-define=AUTOCONNECT=true --dart-define=RELAY_URL=...`
 const _autoConnect = bool.fromEnvironment('AUTOCONNECT');
 const _defaultRelayUrl =
-    String.fromEnvironment('RELAY_URL', defaultValue: 'ws://10.0.2.2:8090/subscribe');
+    String.fromEnvironment('RELAY_URL', defaultValue: 'ws://192.168.1.66:8090/subscribe');
 
 class AlertPage extends StatefulWidget {
   const AlertPage({super.key});
