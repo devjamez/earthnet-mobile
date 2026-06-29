@@ -11,7 +11,10 @@ import 'src/geocode.dart';
 import 'src/identity.dart';
 import 'src/location.dart';
 import 'src/observation_sender.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
 import 'src/proto/earthnet.pb.dart';
+import 'src/pulse_indicator.dart';
 import 'src/relay_connection.dart';
 import 'src/rust/frb_generated.dart';
 import 'src/sensor.dart';
@@ -107,6 +110,11 @@ class _AlertPageState extends State<AlertPage> {
     // Load (or create) this phone's stable anonymous signing identity.
     Identity.loadOrCreate().then((id) {
       if (mounted) setState(() => _sender = ObservationSender(id));
+    });
+    // Restore the saved relay URL (persisted in settings).
+    SharedPreferences.getInstance().then((p) {
+      final u = p.getString('relay_url');
+      if (u != null && u.isNotEmpty && mounted) setState(() => _url.text = u);
     });
     if (_autoConnect) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _connect());
@@ -249,6 +257,53 @@ class _AlertPageState extends State<AlertPage> {
     }
   }
 
+  /// Settings dialog: edit + persist the relay WebSocket URL.
+  Future<void> _openSettings() async {
+    final ctrl = TextEditingController(text: _url.text);
+    final saved = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Ajustes'),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: 'Relay WebSocket',
+            hintText: 'ws://host:8090/subscribe',
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancelar')),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
+            child: const Text('Guardar'),
+          ),
+        ],
+      ),
+    );
+    if (saved == null || saved.isEmpty || saved == _url.text) return;
+    setState(() => _url.text = saved);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('relay_url', saved);
+    if (_wantConnected) await _open(); // reconnect with the new URL
+  }
+
+  /// Status label, color, animate flag and icon for the central indicator.
+  (String, Color, bool, IconData) _indicatorState() {
+    if (!_wantConnected) {
+      return ('Desconectada · tocá Conectar', Colors.grey, false, Icons.power_settings_new);
+    }
+    if (_status == 'connected') {
+      if (_sensing && _pwave) {
+        return ('⚠ Procesando onda P', Colors.deepOrange, true, Icons.graphic_eq);
+      }
+      final label = _sensing ? 'Activa · sensor + escuchando' : 'Activa · escuchando';
+      return (label, Colors.green, true, Icons.graphic_eq);
+    }
+    // connecting / reconnecting / transient error while we want to be connected
+    return ('Conectando…', Colors.amber.shade800, true, Icons.wifi_tethering);
+  }
+
   @override
   void dispose() {
     _wantConnected = false;
@@ -264,94 +319,87 @@ class _AlertPageState extends State<AlertPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('EarthNet — alerta temprana')),
-      body: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.all(12),
-            child: Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _url,
-                    decoration: const InputDecoration(labelText: 'Relay WebSocket'),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                _wantConnected
-                    ? OutlinedButton(onPressed: _disconnect, child: const Text('Disconnect'))
-                    : FilledButton(onPressed: _connect, child: const Text('Connect')),
-              ],
-            ),
+      appBar: AppBar(
+        title: const Text('EarthNet — alerta temprana'),
+        actions: [
+          IconButton(
+            tooltip: _sensing ? 'Sensor activo' : 'Activar sensor',
+            onPressed: _toggleSensor,
+            color: _sensing ? (_pwave ? Colors.deepOrange : Colors.green) : null,
+            icon: Icon(_sensing ? Icons.sensors : Icons.sensors_off),
           ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            child: Align(alignment: Alignment.centerLeft, child: Text('Status: $_status')),
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: Text(
-                'Tu ubicación: ${_lat.toStringAsFixed(3)}, ${_lon.toStringAsFixed(3)}'
-                ' (${_gps ? "GPS" : "demo"})',
-                style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
-              ),
-            ),
-          ),
-          // On-device detection panel (Rust STA/LTA via flutter_rust_bridge).
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    OutlinedButton.icon(
-                      onPressed: _toggleSensor,
-                      icon: Icon(_sensing ? Icons.sensors : Icons.sensors_off),
-                      label: Text(_sensing ? 'Sensor ON' : 'Sensor OFF'),
-                    ),
-                    const SizedBox(width: 12),
-                    if (_sensing)
-                      Expanded(
-                        child: Text(
-                          _pwave
-                              ? '⚠ ONDA P DETECTADA (STA/LTA ${_staLta.toStringAsFixed(1)})'
-                              : 'STA/LTA ${_staLta.toStringAsFixed(1)}',
-                          style: TextStyle(
-                            fontWeight: FontWeight.w600,
-                            color: _pwave ? Colors.red : Colors.grey.shade700,
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
-                if (_sensorMsg.isNotEmpty)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 4),
-                    child: Text(
-                      _sensorMsg,
-                      style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
-                    ),
-                  ),
-              ],
-            ),
-          ),
-          const Divider(),
-          Expanded(
-            child: _alerts.isEmpty
-                ? const Center(child: Text('Esperando sismos…'))
-                : ListView.builder(
-                    padding: const EdgeInsets.all(8),
-                    itemCount: _alerts.length,
-                    itemBuilder: (context, i) => _AlertCard(_alerts[i]),
-                  ),
+          IconButton(
+            tooltip: 'Ajustes',
+            onPressed: _openSettings,
+            icon: const Icon(Icons.settings),
           ),
         ],
       ),
+      body: _alerts.isEmpty ? _statusView() : _alertList(),
     );
   }
+
+  /// Central "alive / listening" view shown while there are no active alerts.
+  Widget _statusView() {
+    final (label, color, active, icon) = _indicatorState();
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            PulseIndicator(color: color, active: active, icon: icon),
+            const SizedBox(height: 28),
+            Text(
+              label,
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: color),
+            ),
+            const SizedBox(height: 10),
+            Text(
+              'Tu ubicación: ${_lat.toStringAsFixed(3)}, ${_lon.toStringAsFixed(3)}'
+              ' (${_gps ? "GPS" : "demo"})',
+              style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
+            ),
+            if (_sensing && _staLta > 0)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text(
+                  'STA/LTA ${_staLta.toStringAsFixed(1)}',
+                  style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
+                ),
+              ),
+            if (_sensorMsg.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text(
+                  _sensorMsg,
+                  style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
+                ),
+              ),
+            const SizedBox(height: 28),
+            _wantConnected
+                ? OutlinedButton.icon(
+                    onPressed: _disconnect,
+                    icon: const Icon(Icons.stop_circle_outlined),
+                    label: const Text('Desconectar'),
+                  )
+                : FilledButton.icon(
+                    onPressed: _connect,
+                    icon: const Icon(Icons.play_arrow),
+                    label: const Text('Conectar'),
+                  ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _alertList() => ListView.builder(
+        padding: const EdgeInsets.all(8),
+        itemCount: _alerts.length,
+        itemBuilder: (context, i) => _AlertCard(_alerts[i]),
+      );
 }
 
 class _AlertCard extends StatelessWidget {
@@ -377,12 +425,17 @@ class _AlertCard extends StatelessWidget {
           children: [
             // Big live countdown
             SizedBox(
-              width: 96,
+              width: 124,
               child: Column(
                 children: [
                   Text(
                     incoming ? '${lead.ceil()}' : '—',
-                    style: TextStyle(fontSize: 40, fontWeight: FontWeight.bold, color: color),
+                    style: TextStyle(
+                      fontSize: 72,
+                      fontWeight: FontWeight.bold,
+                      height: 1.0,
+                      color: color,
+                    ),
                   ),
                   Text(
                     incoming ? 'seg. para\nla onda S' : 'onda S\nya llegó',
