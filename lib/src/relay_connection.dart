@@ -24,7 +24,9 @@ class RelaySubscription {
   /// Stream of decoded ConfirmedEvents (binary frames only).
   Stream<ConfirmedEvent> get events => _channel.stream
       .where((m) => m is List<int>)
-      .map((m) => ConfirmedEvent.fromBuffer(Uint8List.fromList(m as List<int>)));
+      .map(
+        (m) => ConfirmedEvent.fromBuffer(Uint8List.fromList(m as List<int>)),
+      );
 
   Future<void> close() => _channel.sink.close();
 }

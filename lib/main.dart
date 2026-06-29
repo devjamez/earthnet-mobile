@@ -11,19 +11,25 @@ import 'src/geocode.dart';
 import 'src/location.dart';
 import 'src/proto/earthnet.pb.dart';
 import 'src/relay_connection.dart';
+import 'src/rust/frb_generated.dart';
+import 'src/sensor.dart';
 import 'src/verify.dart';
 
-void main() => runApp(const EarthNetApp());
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await RustLib.init(); // load the shared Rust core (detection bridge)
+  runApp(const EarthNetApp());
+}
 
 class EarthNetApp extends StatelessWidget {
   const EarthNetApp({super.key});
 
   @override
   Widget build(BuildContext context) => MaterialApp(
-        title: 'EarthNet',
-        theme: ThemeData(colorSchemeSeed: Colors.red, useMaterial3: true),
-        home: const AlertPage(),
-      );
+    title: 'EarthNet',
+    theme: ThemeData(colorSchemeSeed: Colors.red, useMaterial3: true),
+    home: const AlertPage(),
+  );
 }
 
 /// An incoming event annotated with verification, epicenter, and distance.
@@ -55,8 +61,10 @@ class ReceivedAlert {
 
 // Demo hooks: `--dart-define=AUTOCONNECT=true --dart-define=RELAY_URL=...`
 const _autoConnect = bool.fromEnvironment('AUTOCONNECT');
-const _defaultRelayUrl =
-    String.fromEnvironment('RELAY_URL', defaultValue: 'ws://192.168.1.66:8090/subscribe');
+const _defaultRelayUrl = String.fromEnvironment(
+  'RELAY_URL',
+  defaultValue: 'ws://192.168.1.66:8090/subscribe',
+);
 
 class AlertPage extends StatefulWidget {
   const AlertPage({super.key});
@@ -77,6 +85,12 @@ class _AlertPageState extends State<AlertPage> {
   bool _wantConnected = false;
   int _backoff = 1;
   String _status = 'disconnected';
+
+  // On-device detection (Rust STA/LTA via flutter_rust_bridge).
+  final SensorDetector _detector = SensorDetector();
+  bool _sensing = false;
+  double _staLta = 0;
+  bool _pwave = false;
 
   @override
   void initState() {
@@ -173,11 +187,34 @@ class _AlertPageState extends State<AlertPage> {
     if (mounted) setState(() => _status = 'disconnected');
   }
 
+  /// Toggle on-device P-wave detection from the accelerometer.
+  Future<void> _toggleSensor() async {
+    if (_sensing) {
+      await _detector.stop();
+      setState(() {
+        _sensing = false;
+        _staLta = 0;
+        _pwave = false;
+      });
+      return;
+    }
+    _detector.start((ratio, pick) {
+      if (mounted) {
+        setState(() {
+          _staLta = ratio;
+          _pwave = pick;
+        });
+      }
+    });
+    setState(() => _sensing = true);
+  }
+
   @override
   void dispose() {
     _wantConnected = false;
     _ticker?.cancel();
     _reconnect?.cancel();
+    _detector.stop();
     _sub?.close();
     ForegroundService.stop();
     _url.dispose();
@@ -220,6 +257,30 @@ class _AlertPageState extends State<AlertPage> {
                 ' (${_gps ? "GPS" : "demo"})',
                 style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
               ),
+            ),
+          ),
+          // On-device detection panel (Rust STA/LTA via flutter_rust_bridge).
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+            child: Row(
+              children: [
+                OutlinedButton.icon(
+                  onPressed: _toggleSensor,
+                  icon: Icon(_sensing ? Icons.sensors : Icons.sensors_off),
+                  label: Text(_sensing ? 'Sensor ON' : 'Sensor OFF'),
+                ),
+                const SizedBox(width: 12),
+                if (_sensing)
+                  Text(
+                    _pwave
+                        ? '⚠ ONDA P DETECTADA (STA/LTA ${_staLta.toStringAsFixed(1)})'
+                        : 'STA/LTA ${_staLta.toStringAsFixed(1)}',
+                    style: TextStyle(
+                      fontWeight: FontWeight.w600,
+                      color: _pwave ? Colors.red : Colors.grey.shade700,
+                    ),
+                  ),
+              ],
             ),
           ),
           const Divider(),

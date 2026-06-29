@@ -5,19 +5,22 @@ import 'package:earthnet_mobile/src/proto/earthnet.pb.dart';
 import 'package:earthnet_mobile/src/verify.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-List<int> _hex(String s) =>
-    [for (var i = 0; i < s.length; i += 2) int.parse(s.substring(i, i + 2), radix: 16)];
+List<int> _hex(String s) => [
+  for (var i = 0; i < s.length; i += 2)
+    int.parse(s.substring(i, i + 2), radix: 16),
+];
 
-String _toHex(List<int> b) => b.map((x) => x.toRadixString(16).padLeft(2, '0')).join();
+String _toHex(List<int> b) =>
+    b.map((x) => x.toRadixString(16).padLeft(2, '0')).join();
 
 void main() {
   late Map<String, dynamic> vector;
 
   setUpAll(() {
     final data = jsonDecode(File('test/vectors/v0_1.json').readAsStringSync());
-    vector = (data['vectors'] as List)
-        .cast<Map<String, dynamic>>()
-        .firstWhere((v) => v['name'] == 'confirmed_event');
+    vector = (data['vectors'] as List).cast<Map<String, dynamic>>().firstWhere(
+      (v) => v['name'] == 'confirmed_event',
+    );
   });
 
   test('Dart deterministic encoding matches Rust/prost (canonical bytes)', () {

@@ -5,17 +5,25 @@ import 'package:fixnum/fixnum.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 ConfirmedEvent _event(String geohash, int originSec) => ConfirmedEvent(
-      epicenter: Location(geohash: geohash),
-      originTimeNs: Int64(originSec) * Int64(1000000000),
-    );
+  epicenter: Location(geohash: geohash),
+  originTimeNs: Int64(originSec) * Int64(1000000000),
+);
 
 void main() {
   const originSec = 1700000000;
-  final originUtc = DateTime.fromMillisecondsSinceEpoch(originSec * 1000, isUtc: true);
+  final originUtc = DateTime.fromMillisecondsSinceEpoch(
+    originSec * 1000,
+    isUtc: true,
+  );
 
   test('warning lead is positive while the S-wave is still travelling', () {
     final ev = _event('66jd2', originSec); // epicenter ~ northern Chile
-    final lead = sWaveLeadSeconds(ev, -33.45, -70.66, now: originUtc); // Santiago
+    final lead = sWaveLeadSeconds(
+      ev,
+      -33.45,
+      -70.66,
+      now: originUtc,
+    ); // Santiago
     expect(lead, greaterThan(0));
   });
 
