@@ -73,6 +73,9 @@ class ReceivedAlert {
 }
 
 // Demo hooks: `--dart-define=AUTOCONNECT=true --dart-define=RELAY_URL=...`
+// Drop an alert this many seconds after its S-wave has passed (keeps the list
+// to what's actionable; old expired alerts auto-clear).
+const _alertLingerSeconds = 60;
 const _autoConnect = bool.fromEnvironment('AUTOCONNECT');
 const _defaultRelayUrl = String.fromEnvironment(
   'RELAY_URL',
@@ -113,9 +116,13 @@ class _AlertPageState extends State<AlertPage> {
   @override
   void initState() {
     super.initState();
-    // Live countdown: rebuild every second so lead times tick down.
+    // Live countdown + auto-clear: rebuild every second so lead times tick down,
+    // and drop alerts whose S-wave passed more than _alertLingerSeconds ago.
     _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (mounted) setState(() {});
+      if (!mounted) return;
+      setState(() {
+        _alerts.removeWhere((a) => a.leadSeconds < -_alertLingerSeconds);
+      });
     });
     // Load (or create) this phone's stable anonymous signing identity.
     Identity.loadOrCreate().then((id) {
@@ -358,6 +365,12 @@ class _AlertPageState extends State<AlertPage> {
       appBar: AppBar(
         title: const Text('EarthNet — alerta temprana'),
         actions: [
+          if (_alerts.isNotEmpty)
+            IconButton(
+              tooltip: 'Limpiar alertas',
+              onPressed: () => setState(_alerts.clear),
+              icon: const Icon(Icons.clear_all),
+            ),
           IconButton(
             tooltip: _sensing ? 'Sensor activo' : 'Activar sensor',
             onPressed: _toggleSensor,
