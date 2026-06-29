@@ -9,6 +9,7 @@ import 'src/foreground_service.dart';
 import 'src/geo.dart';
 import 'src/geocode.dart';
 import 'src/identity.dart';
+import 'src/intensity.dart';
 import 'src/location.dart';
 import 'src/observation_sender.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -62,6 +63,13 @@ class ReceivedAlert {
   String? placeName;
 
   double get leadSeconds => sWaveLeadSeconds(event, userLat, userLon);
+
+  /// Expected shaking at the user's location (informational; attenuates with
+  /// distance). The alert that saves lives is the lead-time countdown, not this.
+  double get mmiHere => expectedMmi(event.magnitude, distanceKm);
+
+  /// Expected shaking near the epicenter (always stronger than [mmiHere]).
+  double get mmiEpicenter => expectedMmi(event.magnitude, 0);
 }
 
 // Demo hooks: `--dart-define=AUTOCONNECT=true --dart-define=RELAY_URL=...`
@@ -90,6 +98,8 @@ class _AlertPageState extends State<AlertPage> {
   bool _wantConnected = false;
   int _backoff = 1;
   String _status = 'disconnected';
+  // Filter out alerts not expected to be felt here (off by default for testing).
+  bool _filterByIntensity = false;
 
   // On-device detection (Rust STA/LTA via flutter_rust_bridge).
   final SensorDetector _detector = SensorDetector();
@@ -111,10 +121,14 @@ class _AlertPageState extends State<AlertPage> {
     Identity.loadOrCreate().then((id) {
       if (mounted) setState(() => _sender = ObservationSender(id));
     });
-    // Restore the saved relay URL (persisted in settings).
+    // Restore saved settings (relay URL + intensity filter).
     SharedPreferences.getInstance().then((p) {
-      final u = p.getString('relay_url');
-      if (u != null && u.isNotEmpty && mounted) setState(() => _url.text = u);
+      if (!mounted) return;
+      setState(() {
+        final u = p.getString('relay_url');
+        if (u != null && u.isNotEmpty) _url.text = u;
+        _filterByIntensity = p.getBool('filter_by_intensity') ?? false;
+      });
     });
     if (_autoConnect) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _connect());
@@ -165,6 +179,10 @@ class _AlertPageState extends State<AlertPage> {
           userLon: _lon,
         );
         if (!mounted) return;
+        // Intensity filter: skip events not expected to be felt here. The
+        // lead-time countdown is the life-saving signal; this only hides shaking
+        // too weak to matter at the user's location.
+        if (_filterByIntensity && alert.mmiHere < kFeltMmi) return;
         if (verified && alert.leadSeconds > 0) {
           Alarm.trigger();
         }
@@ -257,35 +275,53 @@ class _AlertPageState extends State<AlertPage> {
     }
   }
 
-  /// Settings dialog: edit + persist the relay WebSocket URL.
+  /// Settings dialog: relay URL + intensity filter, both persisted.
   Future<void> _openSettings() async {
     final ctrl = TextEditingController(text: _url.text);
-    final saved = await showDialog<String>(
+    var filter = _filterByIntensity;
+    final ok = await showDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Ajustes'),
-        content: TextField(
-          controller: ctrl,
-          autofocus: true,
-          decoration: const InputDecoration(
-            labelText: 'Relay WebSocket',
-            hintText: 'ws://host:8090/subscribe',
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setLocal) => AlertDialog(
+          title: const Text('Ajustes'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: ctrl,
+                decoration: const InputDecoration(
+                  labelText: 'Relay WebSocket',
+                  hintText: 'ws://host:8090/subscribe',
+                ),
+              ),
+              const SizedBox(height: 8),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Sólo alertas que me afectan'),
+                subtitle: const Text('Oculta sismos que no se sentirían aquí'),
+                value: filter,
+                onChanged: (v) => setLocal(() => filter = v),
+              ),
+            ],
           ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancelar')),
+            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Guardar')),
+          ],
         ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancelar')),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
-            child: const Text('Guardar'),
-          ),
-        ],
       ),
     );
-    if (saved == null || saved.isEmpty || saved == _url.text) return;
-    setState(() => _url.text = saved);
+    if (ok != true) return;
+    final newUrl = ctrl.text.trim();
+    final urlChanged = newUrl.isNotEmpty && newUrl != _url.text;
+    setState(() {
+      if (urlChanged) _url.text = newUrl;
+      _filterByIntensity = filter;
+    });
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('relay_url', saved);
-    if (_wantConnected) await _open(); // reconnect with the new URL
+    if (urlChanged) await prefs.setString('relay_url', newUrl);
+    await prefs.setBool('filter_by_intensity', filter);
+    if (urlChanged && _wantConnected) await _open(); // reconnect with new URL
   }
 
   /// Status label, color, animate flag and icon for the central indicator.
@@ -480,6 +516,23 @@ class _AlertCard extends StatelessWidget {
                   Text(
                     'A ${alert.distanceKm.toStringAsFixed(0)} km de vos',
                     style: const TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 4),
+                  // Informational: expected shaking here (attenuates with
+                  // distance) vs near the epicenter. Not the alert trigger.
+                  Text(
+                    'Intensidad aquí: ${intensityText(alert.mmiHere)}',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: alert.mmiHere >= kFeltMmi
+                          ? Colors.deepOrange
+                          : Colors.grey.shade600,
+                    ),
+                  ),
+                  Text(
+                    'cerca del epicentro: ${intensityText(alert.mmiEpicenter)}',
+                    style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
                   ),
                 ],
               ),
