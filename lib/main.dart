@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'src/countdown.dart';
+import 'src/foreground_service.dart';
 import 'src/proto/earthnet.pb.dart';
 import 'src/relay_connection.dart';
 import 'src/verify.dart';
@@ -33,8 +34,21 @@ class AlertPage extends StatefulWidget {
   State<AlertPage> createState() => _AlertPageState();
 }
 
+// Demo hooks: `--dart-define=AUTOCONNECT=true --dart-define=RELAY_URL=...`
+const _autoConnect = bool.fromEnvironment('AUTOCONNECT');
+const _defaultRelayUrl =
+    String.fromEnvironment('RELAY_URL', defaultValue: 'ws://10.0.2.2:8090/subscribe');
+
 class _AlertPageState extends State<AlertPage> {
-  final _url = TextEditingController(text: 'ws://10.0.2.2:8090/subscribe');
+  final _url = TextEditingController(text: _defaultRelayUrl);
+
+  @override
+  void initState() {
+    super.initState();
+    if (_autoConnect) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _connect());
+    }
+  }
   // Demo location (Santiago). v1.1: read from device GPS.
   final double _lat = -33.45;
   final double _lon = -70.66;
@@ -47,6 +61,7 @@ class _AlertPageState extends State<AlertPage> {
     setState(() => _status = 'connecting…');
     final sub = RelaySubscription.connect(Uri.parse(_url.text));
     _sub = sub;
+    await ForegroundService.start(); // keep the socket alive with screen off
     setState(() => _status = 'connected');
     sub.events.listen(
       (event) async {
@@ -67,6 +82,7 @@ class _AlertPageState extends State<AlertPage> {
   @override
   void dispose() {
     _sub?.close();
+    ForegroundService.stop();
     _url.dispose();
     super.dispose();
   }
