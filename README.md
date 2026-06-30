@@ -1,8 +1,8 @@
-> 🌎 Part of **[EarthNet](https://github.com/devjamez/earthnet)** — open-source, decentralized earthquake early warning for Latin America.
+> 🌎 Part of **[EarthNet](https://github.com/EarthNet-EEW/earthnet)** — open-source, decentralized earthquake early warning for Latin America.
 
 # earthnet-mobile
 
-Android-first Flutter client for [EarthNet](https://github.com/devjamez/earthnet-protocol).
+Android-first Flutter client for [EarthNet](https://github.com/EarthNet-EEW/earthnet-protocol).
 Holds a relay WebSocket open, verifies each `ConfirmedEvent`'s Ed25519 signature,
 and computes the **S-wave countdown locally** from the epicenter + origin time and
 the device's own location (the client never sends its location upstream).
